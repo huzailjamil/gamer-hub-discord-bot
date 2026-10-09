@@ -1,0 +1,24 @@
+{
+  "name": "gamer-hub-discord-bot",
+  "version": "1.0.0",
+  "description": "Gamer Hub Discord YouTube notification bot with administrator approvals",
+  "main": "app.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "test": "node --test",
+    "check": "node --check app.js && node --check src/commands.js && node --check src/worker.js && node --check src/web.js"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "fast-xml-parser": "^5.11.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0 <25"
+  }
+}
