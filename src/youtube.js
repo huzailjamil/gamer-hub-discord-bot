@@ -4,7 +4,7 @@ class YouTube {
   constructor(store, config) { this.store = store; this.config = config; }
   async request(resource, params) {
     const search = resource === 'search';
-    if (!this.store.reserveQuota(search ? 100 : 1, search, this.config.budget, this.config.searchBudget)) {
+    if (!this.store.reserveQuota(1, search, this.config.budget, this.config.searchBudget)) {
       const error = new Error('YouTube daily budget reached; waiting for the next Pacific-time day.');
       error.code = 'QUOTA_LOCAL'; throw error;
     }

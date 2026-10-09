@@ -1,6 +1,6 @@
 'use strict';
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, escapeMarkdown } = require('discord.js');
-const { isAdmin, parseVideo, nonce } = require('./core');
+const { isAdmin, parseChannel, parseVideo, nonce } = require('./core');
 const { randomUUID } = require('node:crypto');
 const memberOption = o => o.setName('member').setDescription('Member whose channel to manage').setRequired(true);
 const command = new SlashCommandBuilder().setName('youtube').setDescription('YouTube creator notifications').setDMPermission(false)
@@ -88,14 +88,17 @@ function attachCommands(client, store, youtube, config, channels, status) {
       if (action === 'add') {
         if (store.get('SELECT id FROM channels WHERE member=?', interaction.user.id)) return reply('You already have a channel registered. Use /youtube remove first.');
         if (store.get('SELECT count(*) n FROM channels').n >= config.maxChannels) return reply('The server has reached its channel limit. Ask an administrator.');
+        const input = interaction.options.getString('channel', true);
+        parseChannel(input); // Invalid input must not create a five-minute cooldown.
         const cooldown = store.get('SELECT until FROM cooldown WHERE member=?', interaction.user.id);
-        if (cooldown?.until > Date.now()) return reply('Please wait five minutes between channel submissions.');
-        store.run('INSERT INTO cooldown(member,until) VALUES(?,?) ON CONFLICT(member) DO UPDATE SET until=excluded.until', interaction.user.id, Date.now() + 300000);
-        const info = await youtube.resolve(interaction.options.getString('channel', true));
+        if (cooldown?.until > Date.now()) return reply(`Please wait ${Math.ceil((cooldown.until - Date.now()) / 1000)} seconds before trying again.`);
+        store.run('INSERT INTO cooldown(member,until) VALUES(?,?) ON CONFLICT(member) DO UPDATE SET until=excluded.until', interaction.user.id, Date.now() + 10000); // Short API-abuse limit while resolving; successful submissions use five minutes.
+        const info = await youtube.resolve(input);
         if (store.get('SELECT id FROM channels WHERE youtube=?', info.id)) return reply('That YouTube channel is already registered.');
         // Recheck capacity after the network request; another member may have submitted meanwhile.
         if (store.get('SELECT count(*) n FROM channels').n >= config.maxChannels) return reply('The server has reached its channel limit.');
         const row = store.add(interaction.user.id, info);
+        store.run('UPDATE cooldown SET until=? WHERE member=?', Date.now() + 300000, interaction.user.id);
         try { await sendApproval(store, channels.approvals, row); }
         catch { store.audit('approval_delivery_failed', null, row.id); }
         return reply('Your channel is pending admin approval. Use /youtube list to check its status.');
@@ -134,7 +137,7 @@ function attachCommands(client, store, youtube, config, channels, status) {
         const expected = action === 'pause' ? 'approved' : 'paused';
         if (row.state !== expected) return reply(`Channel must be ${expected} first.`);
         store.transaction(() => {
-          store.run('UPDATE channels SET state=?,since=?,last_poll=0,last_search=0,renew_after=0 WHERE id=?', action === 'pause' ? 'paused' : 'approved', Date.now(), row.id);
+          store.run('UPDATE channels SET state=?,since=?,last_poll=0,last_search=0,renew_after=0,next_probe=0,probe_failures=0 WHERE id=?', action === 'pause' ? 'paused' : 'approved', Date.now(), row.id);
           store.run("UPDATE events SET state='cancelled' WHERE channel=? AND state IN ('pending','sending','failed')", row.id);
           store.audit(action === 'pause' ? 'channel_paused' : 'channel_resumed', interaction.user.id, row.id);
         });

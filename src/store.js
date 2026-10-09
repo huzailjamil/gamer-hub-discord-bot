@@ -25,6 +25,16 @@ class Store {
       CREATE TABLE IF NOT EXISTS quota (day TEXT PRIMARY KEY, used INTEGER NOT NULL DEFAULT 0, search_used INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS locks (name TEXT PRIMARY KEY, owner TEXT NOT NULL, until INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS cooldown (member TEXT PRIMARY KEY, until INTEGER NOT NULL);`);
+    if (this.get('PRAGMA user_version').user_version < 1) {
+      this.transaction(() => {
+        this.db.exec(`ALTER TABLE channels ADD COLUMN next_probe INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE channels ADD COLUMN probe_failures INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE channels ADD COLUMN probe_success INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE quota ADD COLUMN search_calls INTEGER NOT NULL DEFAULT 0;
+          UPDATE quota SET search_calls=CAST(search_used / 100 AS INTEGER), used=MAX(0, used-search_used);
+          PRAGMA user_version=1;`);
+      });
+    }
   }
   run(sql, ...args) { return this.db.prepare(sql).run(...args); }
   get(sql, ...args) { return this.db.prepare(sql).get(...args); }
@@ -68,8 +78,8 @@ class Store {
       const day = pacificDay();
       this.run('INSERT OR IGNORE INTO quota(day) VALUES(?)', day);
       const q = this.get('SELECT * FROM quota WHERE day=?', day);
-      if (q.used + cost > totalBudget || (search && q.search_used + cost > searchBudget)) return false;
-      this.run('UPDATE quota SET used=used+?, search_used=search_used+? WHERE day=?', cost, search ? cost : 0, day);
+      if (search ? q.search_calls + cost > searchBudget : q.used + cost > totalBudget) return false;
+      this.run('UPDATE quota SET used=used+?, search_calls=search_calls+? WHERE day=?', search ? 0 : cost, search ? cost : 0, day);
       return true;
     });
   }

@@ -21,11 +21,12 @@ function config() {
     port: process.env.PORT || '3000', poll: integer('POLL_SECONDS', 300, 60, 86400) * 1000,
     liveCheck: integer('LIVE_CHECK_SECONDS', 60, 30, 3600) * 1000,
     budget: integer('YOUTUBE_DAILY_BUDGET', 9000, 100, 1000000),
-    searchBudget: integer('LIVE_SEARCH_DAILY_BUDGET', 4000, 0, 1000000),
+    searchBudget: integer('LIVE_SEARCH_DAILY_CALLS', process.env.LIVE_SEARCH_DAILY_BUDGET ? Math.floor(Number(process.env.LIVE_SEARCH_DAILY_BUDGET) / 100) : 80, 0, 1000000),
+    autoLive: process.env.AUTO_LIVE_DISCOVERY !== 'false',
+    liveProbe: integer('LIVE_DISCOVERY_SECONDS', 120, 60, 3600) * 1000,
     maxChannels: integer('MAX_CHANNELS', 25, 1, 1000)
   };
   if (c.approvals === c.notifications) throw new Error('Approval and notification channels must be different.');
-  if (c.searchBudget > c.budget) throw new Error('Live search budget must not exceed total budget.');
   return c;
 }
 module.exports = { config };

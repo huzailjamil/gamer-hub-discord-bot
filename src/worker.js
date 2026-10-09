@@ -2,10 +2,12 @@
 const { eventKind, nonce } = require('./core');
 const { subscribe } = require('./web');
 const { sendApproval } = require('./commands');
+const { discoverLive } = require('./discovery');
 
 class Worker {
   constructor(store, youtube, config, channels, ready) {
     Object.assign(this, { store, youtube, config, channels, ready });
+    this.liveDiscovery = discoverLive;
     this.busy = false; this.lastSuccess = 0; this.lastCandidates = 0;
   }
   ingest(channel, videos) {
@@ -33,7 +35,63 @@ class Worker {
       this.ingest(channel, await this.youtube.videos(ids));
     } catch (e) { this.store.audit(search ? 'live_discovery_failed' : 'upload_check_failed', null, channel.id, e.message); }
   }
+  async probe(channel) {
+    const interval = this.config.liveProbe || 120000;
+    this.store.run('UPDATE channels SET next_probe=? WHERE id=?', Date.now() + interval, channel.id);
+    try {
+      const ids = await this.liveDiscovery(channel.youtube);
+      const current = this.store.get("SELECT * FROM channels WHERE id=? AND state='approved'", channel.id);
+      if (!current || !this.ready()) return;
+      this.store.run('UPDATE channels SET probe_failures=0,probe_success=? WHERE id=?', Date.now(), channel.id);
+      if (channel.probe_failures) this.store.audit('automatic_live_discovery_recovered', null, channel.id);
+      for (const id of ids) this.store.run('INSERT OR IGNORE INTO candidates(video,channel,expires) VALUES(?,?,?)', id, channel.id, Date.now() + 30 * 86400000);
+    } catch (e) {
+      const failures = channel.probe_failures + 1;
+      const delay = Math.min(3600000, interval * 2 ** Math.min(failures, 5));
+      this.store.run('UPDATE channels SET probe_failures=?,next_probe=? WHERE id=?', failures, Date.now() + delay, channel.id);
+      this.store.audit('automatic_live_discovery_backoff', null, channel.id, e.message);
+    }
+  }
+  async checkCandidates() {
+    if (Date.now() - this.lastCandidates < this.config.liveCheck || !this.ready()) return;
+    this.lastCandidates = Date.now();
+    this.store.run('DELETE FROM candidates WHERE expires<?', Date.now());
+    const candidates = this.store.all("SELECT v.* FROM candidates v JOIN channels c ON c.id=v.channel WHERE c.state='approved'");
+    if (!candidates.length) return;
+    try {
+      const videos = await this.youtube.videos(candidates.map(v => v.video));
+      // Hints from pages/webhooks are untrusted until ownership and public status are verified by API.
+      for (const candidate of candidates) {
+        const video = videos.find(v => v.id === candidate.video);
+        const row = this.store.get('SELECT * FROM channels WHERE id=?', candidate.channel);
+        if (video && row && video.snippet?.channelId !== row.youtube) this.store.run('DELETE FROM candidates WHERE video=?', candidate.video);
+      }
+      for (const channel of this.store.all("SELECT * FROM channels WHERE state='approved'")) this.ingest(channel, videos);
+    } catch (e) { this.store.audit('tracked_video_check_failed', null, null, e.message); }
+  }
+  async fastTick() {
+    if (this.fastBusy || !this.ready()) return;
+    this.fastBusy = true;
+    try {
+      await this.checkCandidates();
+      await this.deliver();
+      if (this.config.autoLive) {
+        const due = this.store.all("SELECT * FROM channels WHERE state='approved' AND next_probe<=? ORDER BY next_probe", Date.now());
+        // Three requests at most; a slow public page must not stall all other channels.
+        let index = 0;
+        await Promise.all(Array.from({ length: Math.min(3, due.length) }, async () => {
+          while (index < due.length && this.ready()) await this.probe(due[index++]);
+        }));
+      }
+      await this.checkCandidates();
+      await this.deliver();
+    } catch (e) { this.store.audit('fast_worker_failed', null, null, String(e.code || e.name)); }
+    finally { this.fastBusy = false; }
+  }
   async deliver() {
+    if (this.delivering) return;
+    this.delivering = true;
+    try {
     const rows = this.store.all("SELECT e.*, c.member, c.youtube, c.since FROM events e JOIN channels c ON c.id=e.channel WHERE c.state='approved' AND e.state IN ('pending','sending') AND e.next_try<=? ORDER BY e.created LIMIT 20", Date.now());
     for (const event of rows) {
       if (!this.ready()) return;
@@ -80,6 +138,7 @@ class Worker {
         this.store.audit('notification_failed', null, event.channel, `${event.video}:${String(e.code || e.name || 'Error')}`);
       }
     }
+    } finally { this.delivering = false; }
   }
   async tick() {
     if (this.busy || !this.ready()) return;
@@ -93,9 +152,9 @@ class Worker {
         this.store.run("UPDATE events SET payload='{}' WHERE created<?", Date.now() - 30 * 86400000);
       }
       const active = this.store.all("SELECT * FROM channels WHERE state='approved' ORDER BY last_poll");
-      // Search costs 100 units/request. Spread searches across a full day and across all channels.
-      const searchInterval = this.config.searchBudget > 0 ? Math.max(600000, active.length * 100 * 86400000 / this.config.searchBudget) : Infinity;
-      const pollInterval = Math.max(this.config.poll, active.length * 2 * 86400000 / Math.max(100, this.config.budget - this.config.searchBudget - 2000));
+      // Search uses its own daily call bucket. Spread discovery over all channels.
+      const searchInterval = this.config.searchBudget > 0 ? Math.max(600000, active.length * 86400000 / this.config.searchBudget) : Infinity;
+      const pollInterval = Math.max(this.config.poll, active.length * 2 * 86400000 / Math.max(100, this.config.budget - 2000));
       for (const channel of active) {
         if (!this.ready()) return;
         if (channel.renew_after <= Date.now()) {
@@ -105,18 +164,7 @@ class Worker {
         if (Date.now() - channel.last_poll >= pollInterval) await this.discover(channel, false);
         if (Date.now() - channel.last_search >= searchInterval) await this.discover(channel, true);
       }
-      if (Date.now() - this.lastCandidates >= this.config.liveCheck) {
-        this.lastCandidates = Date.now();
-        this.store.run('DELETE FROM candidates WHERE expires<?', Date.now());
-        const candidates = this.store.all("SELECT v.* FROM candidates v JOIN channels c ON c.id=v.channel WHERE c.state='approved'");
-        if (candidates.length) {
-          try {
-            const videos = await this.youtube.videos(candidates.map(v => v.video));
-            for (const channel of active) this.ingest(channel, videos);
-            // Deleted/private/unavailable candidates expire after 30 days rather than disappearing on a transient empty response.
-          } catch (e) { this.store.audit('tracked_video_check_failed', null, null, e.message); }
-        }
-      }
+      await this.checkCandidates();
       await this.deliver();
       // A failed approval message does not lose the submission. Retry once per minute.
       if (!this.lastApprovals || Date.now() - this.lastApprovals > 60000) {

@@ -7,7 +7,7 @@ YouTube upload and livestream notifications for a Discord server. Members submit
 - One YouTube channel per member, with unique channel registration across the server.
 - Private approval cards with Approve/Reject buttons; administrator permission is checked again when clicked.
 - Upload alerts and live-start alerts with video title, thumbnail, watch link and creator mention.
-- YouTube signed push notifications, automatic subscription renewal, upload polling, and quota-limited live discovery.
+- Automatic public live-page discovery every two minutes, signed YouTube push notifications, upload polling, and API search fallback.
 - Persistent SQLite registration, queue, deduplication history, audit records and quota accounting.
 - Retries with backoff, live status revalidation before delivery, and crash recovery.
 - Pause, resume, remove, reject, operational status, audit history, and manual retry controls.
@@ -19,15 +19,15 @@ This is an implemented first version, not a deployed service. Live Discord/YouTu
 
 ### 1. Put the source in the application root
 
-Use cPanel Terminal. If the application root exists and contains a placeholder `app.js`, back up that placeholder before replacing it. Clone into an empty directory:
+Keep an existing cPanel application's root unchanged. **Changing its root relocates files and can break its environment if the destination is already populated.** For an existing `discord-bot` app containing only the cPanel starter code, stop it, back up any custom files, and install like this:
 
 ```bash
 cd ~
-git clone https://github.com/huzailjamil/gamer-hub-discord-bot.git discord-bot
-cd ~/discord-bot
+git clone https://github.com/huzailjamil/gamer-hub-discord-bot.git
+cp -a gamer-hub-discord-bot/{app.js,package.json,package-lock.json,src,test,.git,.gitignore,.env.example,README.md} discord-bot/
 ```
 
-If `~/discord-bot` already exists, clone to a different empty directory and set that as the application root, or download this repository's ZIP and upload/extract its contents directly into the existing root. `app.js`, `package.json`, `src/`, and the other project files must be directly inside the root, not an extra nested folder. Do not delete an existing database or environment file when updating.
+This copies the project into the existing root; it does not replace `node_modules`, private `.env` files or runtime data. Do this only for the initial installation, not for updates. If the app root is not `discord-bot`, substitute its actual path. If no Node app exists yet, create one with root `discord-bot` first, then install the code above. For later updates use `git pull --ff-only` from the active root as described below. Do not rename or manually remove cPanel virtual environments.
 
 ### 2. Configure Setup Node.js App
 
@@ -35,7 +35,7 @@ If `~/discord-bot` already exists, clone to a different empty directory and set 
 | --- | --- |
 | Node.js version | 24.x |
 | Application mode | Production |
-| Application root | `discord-bot` (or the actual directory chosen above) |
+| Application root | Keep the existing `discord-bot` root unchanged |
 | Application URL | `taskoraagent.com` with path `discord-bot` |
 | Application startup file | `app.js` |
 
@@ -82,7 +82,7 @@ Do not override a `PORT` supplied by the host. For standalone local operation th
 3. The bot should come online in GAMER HUB. Run `/youtube status` as an administrator.
 4. As a member, run `/youtube add channel:@YourHandle`.
 5. An administrator approves the card in the private approval channel.
-6. Upload a **new public video after approval**, or schedule a new public stream and register its link with `/youtube watch` before starting it.
+6. Upload a **new public video after approval**, or start a new public stream after approval. No `/youtube watch` command is required. Check automatic discovery status if an alert is delayed.
 7. Verify exactly one alert appears and that `/youtube status` and `/youtube audit` show no errors.
 
 The app registers `/youtube` automatically at startup in the configured server. No separate command registration script is needed. Discord permissions and the two configured channel types are checked on startup.
@@ -112,27 +112,34 @@ The only allowed ping in an alert is the submitting creator's Discord user. Titl
 | `/youtube audit` | Admin | Last 12 operational audit entries |
 | `/youtube retry` | Admin | Retry failed alerts; stale live alerts are skipped |
 
-Supported channel inputs: `@handle`, `/@handle`, `/channel/UC…`, raw `UC…` channel IDs, and legacy `/user/name`. Legacy `/c/custom-name` links must be replaced with the channel's @handle. Members can submit once every five minutes, and use `/youtube watch` once every 30 seconds.
+Supported channel inputs: `@handle`, `/@handle`, `/channel/UC…`, raw `UC…` channel IDs, and legacy `/user/name`. Legacy `/c/custom-name` links must be replaced with the channel's @handle. Successful submissions have a five-minute cooldown. Invalid URL syntax does not start that cooldown; channel-resolution attempts have a short ten-second API-abuse limit. `/youtube watch` has a 30-second limit.
 
 ## Detection timing and quotas
 
-YouTube push notifications report uploads and metadata edits. They **do not guarantee a live-start event**. This bot combines three paths:
+Approved channels are monitored automatically. **Members do not need to use `/youtube watch` for each stream.** That command remains an optional fallback.
 
-1. **Push:** signed Atom hints persist in SQLite, then the worker verifies the video with YouTube before posting.
-2. **Upload fallback:** check the latest 50 uploads about every five minutes for a small server, slowing automatically with more channels to preserve quota.
-3. **Streams:** known scheduled/live candidates are checked about every minute. `/youtube watch` ensures a specific public broadcast is known. Discovery of unknown active streams uses expensive `search.list` calls distributed over a daily budget.
+1. **Automatic live-page discovery:** every 120 seconds, read the channel's public `/live` page, extracting active/upcoming video IDs from public page data. Persist these hints, then verify the channel owner, public visibility and actual live status using `videos.list`. No messages are sent based on HTML alone. Checks run separately from the slower upload/search worker, with at most three public requests in flight.
+2. **Known streams:** check discovered or pushed candidates about every minute, batching up to 50 IDs per API call. In normal conditions this targets roughly 2–3 minutes from a discoverable live start to an alert, not a guaranteed deadline.
+3. **Push and uploads:** signed push notifications and periodic upload-playlist checks continue to discover uploads and streams when YouTube exposes them there.
+4. **API search fallback:** distribute a limited number of `search.list` calls across channels throughout the day, covering unknown active streams when other paths fail.
 
-Defaults reserve at most 9,000 units/day locally, including at most 4,000 for live search. Search calls cost 100 units. With three approved channels, fallback live discovery runs roughly every **108 minutes per channel**; with one channel, roughly every 36 minutes. A stream missed by push and upload discovery can therefore be announced late, or missed if it ends before the next search. Registering a scheduled stream with `/youtube watch` avoids waiting for this search. No near-instant guarantee is made. Public premieres may be classified as live broadcasts by YouTube and receive live-style alerts.
+Public YouTube HTML is not a stable API. Consent pages, hosting-IP blocks, changed layouts, rate limits, and unavailable metadata can prevent fast discovery. The bot does not bypass these: it backs off exponentially up to one hour, records an audit entry and exposes the affected channel count in `/youtube status`. API polling/push remain enabled. A successful page check reports whether the page could be parsed, not proof that YouTube exposed every stream. Public premieres may be classified as live broadcasts by YouTube.
+
+Google's quota documentation, checked October 9, 2026, lists a separate default **100 search calls/day**, plus **10,000 daily units for other endpoints**. This update corrects the previous shared 100-units-per-search accounting. Local defaults use 80 search calls and 9,000 other units, leaving headroom. Always check the actual limits for your project in Google Cloud.
 
 | Optional variable | Default | Purpose |
 | --- | --- | --- |
-| `POLL_SECONDS` | `300` | Minimum upload poll interval |
-| `LIVE_CHECK_SECONDS` | `60` | Known-stream check interval |
-| `YOUTUBE_DAILY_BUDGET` | `9000` | Local daily cap across all YouTube calls |
-| `LIVE_SEARCH_DAILY_BUDGET` | `4000` | Portion allowed for active-stream discovery; `0` disables search |
-| `MAX_CHANNELS` | `25` | Total registrations, including pending and paused |
+| `AUTO_LIVE_DISCOVERY` | `true` | Set `false` to disable public-page discovery |
+| `LIVE_DISCOVERY_SECONDS` | `120` | Public live-page check interval, minimum 60 seconds |
+| `POLL_SECONDS` | `300` | Minimum upload API poll interval; scales with channel count |
+| `LIVE_CHECK_SECONDS` | `60` | Known-stream API check interval |
+| `YOUTUBE_DAILY_BUDGET` | `9000` | Local daily cap for non-search YouTube API units |
+| `LIVE_SEARCH_DAILY_CALLS` | `80` | Local search-call cap; `0` disables API search |
+| `MAX_CHANNELS` | `25` | All registrations, including pending and paused |
 
-Accounting resets on the next Pacific-time calendar day. This is a local cap, not a Google quota increase, and does not account for other apps using the same Cloud project. Verify the actual quota in Google Cloud. More channels, concurrent streams, unavailable candidates, or a shared API project may exhaust quota. On exhaustion, work remains queued and checks resume the next day. Raise budgets only if your project's quota permits it. Polling does not backfill more than the latest 50 uploads, so unusually high upload volume or long downtime can miss content. Candidate tracking expires after 30 days without a confirming public broadcast response.
+At 80 search calls/day, API search alone runs about every 18 minutes with one approved channel, or every 54 minutes with three. Automatic public live-page checks run independently every two minutes when accessible. Larger servers and slow requests may increase actual latency. If the old `LIVE_SEARCH_DAILY_BUDGET` is set, its value is conservatively translated to calls by dividing by 100, unless the new variable is explicitly set; e.g. `4000` becomes 40 calls. Existing approvals and deduplication records are preserved by an automatic SQLite migration, including conversion of historical search accounting.
+
+Accounting resets at midnight Pacific Time. Local limits do not count other apps using the same Cloud project. Exceeding API quota delays verification and delivery even if page discovery works. Upload polling only examines the latest 50 uploads; long downtime or high volume can miss content. Candidate hints expire after 30 days without a confirming response. Streams already live before approval/resume and ended streams are intentionally skipped.
 
 ## Hosting and operation
 
@@ -167,7 +174,7 @@ Click **Restart** in cPanel. The database and environment variables stay in plac
 - **No approval card:** fix approval-channel permissions. Pending cards retry every minute; admins can also use `/youtube approve`.
 - **YouTube HTTP 403:** check API enablement, key restrictions, project quota, and any server-IP restriction.
 - **Subscription failure:** verify `PUBLIC_URL`, public HTTPS routing, and `WEBHOOK_SECRET`; check `/youtube audit`. Upload polling continues as fallback.
-- **No live alert:** register the public stream with `/youtube watch` before it starts. Streams already live at approval/resume are intentionally not backfilled.
+- **No live alert:** inspect `/youtube status` for automatic discovery backoff and API quota. `/youtube audit` reports failed public checks. `/youtube watch` remains an optional fallback if your host cannot access the public page. Streams already live at approval/resume are not backfilled.
 - **HTTP `starting`/503:** Discord is not ready, startup checks failed, or the worker has not completed a pass recently. Check the application log.
 
 ## Development and validation
@@ -181,4 +188,17 @@ npm audit --omit=dev
 
 Automated tests use temporary databases and mocked Discord/YouTube responses, plus a real local HTTP callback server. They do not use private credentials or send real Discord messages. Complete the live smoke test in the installation section after deployment.
 
-Implementation references: [YouTube push notifications](https://developers.google.com/youtube/v3/guides/push_notifications), [channels.list](https://developers.google.com/youtube/v3/docs/channels/list), [playlistItems.list](https://developers.google.com/youtube/v3/docs/playlistItems/list), [videos.list](https://developers.google.com/youtube/v3/docs/videos/list), [search.list](https://developers.google.com/youtube/v3/docs/search/list), [Discord messages](https://docs.discord.com/developers/resources/message).
+Implementation references: [YouTube current quotas](https://developers.google.com/youtube/v3/determine_quota_cost), [YouTube push notifications](https://developers.google.com/youtube/v3/guides/push_notifications), [channels.list](https://developers.google.com/youtube/v3/docs/channels/list), [playlistItems.list](https://developers.google.com/youtube/v3/docs/playlistItems/list), [videos.list](https://developers.google.com/youtube/v3/docs/videos/list), [search.list](https://developers.google.com/youtube/v3/docs/search/list), [Discord messages](https://docs.discord.com/developers/resources/message).
+
+## Upgrade from 1.0.0 on the existing server
+
+Keep the cPanel root as `discord-bot`. Save any environment changes, and **Stop** the app before updating, so the old process cannot run against the new database schema. From the activated cPanel Node environment:
+
+```bash
+cd /home2/taskoraagent/discord-bot
+git pull --ff-only origin main
+npm ci --omit=dev
+npm test
+```
+
+Then click **Start** (or **Restart**) in cPanel. Defaults enable the improvement; no additional secrets or environment variables are required. Existing approved channels remain approved. Run `/youtube status` and confirm `Automatic live discovery: every 120 seconds` appears. Do not run the old version against a migrated database: restore a pre-upgrade database backup first if rolling back.

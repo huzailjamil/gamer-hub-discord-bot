@@ -68,10 +68,10 @@ test('queue deduplicates repeated pushes and title updates', t => {
 });
 test('budget reservations are atomic and separate expensive search budget', t => {
   const s = fixture(t);
-  assert(s.reserveQuota(100, true, 110, 100));
-  assert(!s.reserveQuota(100, true, 110, 100));
-  assert(s.reserveQuota(10, false, 110, 100));
-  assert(!s.reserveQuota(1, false, 110, 100));
+  assert(s.reserveQuota(1, true, 10, 1));
+  assert(!s.reserveQuota(1, true, 10, 1));
+  assert(s.reserveQuota(10, false, 10, 1));
+  assert(!s.reserveQuota(1, false, 10, 1));
 });
 test('leader lease prevents a second worker', t => {
   const s = fixture(t);

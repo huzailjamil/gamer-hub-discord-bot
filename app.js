@@ -65,7 +65,7 @@ async function main() {
         const active = store.get("SELECT count(*) n FROM channels WHERE state='approved'").n;
         const pending = store.get("SELECT count(*) n FROM events WHERE state IN ('pending','sending')").n;
         const failed = store.get("SELECT count(*) n FROM events WHERE state='failed'").n;
-        return `Bot: ${healthy() ? 'ready' : 'starting/degraded'}\nApproved channels: ${active}\nAlert queue: ${pending}; failed: ${failed}\nYouTube budget today: ${quota?.used || 0}/${c.budget}; search: ${quota?.search_used || 0}/${c.searchBudget}\nLast worker pass: ${worker.lastSuccess ? new Date(worker.lastSuccess).toISOString() : 'not yet'}\nLive search interval: ${c.searchBudget ? Math.ceil(Math.max(10, active * 100 * 1440 / c.searchBudget)) + ' minutes/channel' : 'disabled'}\nUse /youtube watch for frequent checks of a known scheduled stream.`;
+        return `Bot: ${healthy() ? 'ready' : 'starting/degraded'}\nApproved channels: ${active}\nAlert queue: ${pending}; failed: ${failed}\nYouTube budget today: ${quota?.used || 0}/${c.budget}; search calls: ${quota?.search_calls || 0}/${c.searchBudget}\nLast worker pass: ${worker.lastSuccess ? new Date(worker.lastSuccess).toISOString() : 'not yet'}\nLive search interval: ${c.searchBudget ? Math.ceil(Math.max(10, active * 1440 / c.searchBudget)) + ' minutes/channel' : 'disabled'}\nAutomatic live discovery: ${c.autoLive ? 'every ' + c.liveProbe / 1000 + ' seconds (public-page availability permitting)' : 'disabled'}\nChannels backing off: ${store.get("SELECT count(*) n FROM channels WHERE state='approved' AND probe_failures>0").n}\n/youtube watch is optional; approved channels are checked automatically.`;
       };
       attachCommands(client, store, youtube, c, channels, status);
       // Upsert only our command; do not overwrite other commands registered to this application.
@@ -73,7 +73,9 @@ async function main() {
       initialized = true;
       store.audit('bot_ready');
       timers.push(setInterval(() => { void worker.tick(); }, 15000));
+      timers.push(setInterval(() => { void worker.fastTick(); }, 15000));
       void worker.tick();
+      void worker.fastTick();
     } catch (e) {
       store.audit('startup_failed', null, null, e.message?.includes('token') ? 'Application/token mismatch or authorization failure.' : e.message);
       shutdown('startup_aborted', 1);
