@@ -93,7 +93,7 @@ Invite using scopes `bot` and `applications.commands`. In both configured text c
 
 The bot does not require Administrator permission. Server Members, Presence, and Message Content privileged intents should stay off. It uses only the Guilds gateway intent. Reviewers need the server's **Administrator** permission; Manage Server alone is not sufficient. Administrators should verify ownership themselves: a submitted public channel link is not proof of ownership.
 
-The only allowed ping in an alert is the submitting creator's Discord user. Titles cannot trigger @everyone or role pings. Other messages suppress all mentions.
+Upload and livestream alerts ping `@everyone` and mention the submitting creator. In **#creator-updates → Edit Channel → Permissions**, allow the bot **Mention @everyone, @here, and All Roles**. Other messages suppress all mentions; arbitrary role mentions remain disabled in alert payloads. Members who suppress everyone mentions may not receive a notification.
 
 ## Commands
 

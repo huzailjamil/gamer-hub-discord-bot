@@ -103,7 +103,7 @@ test('worker ignores channel ownership mismatch and removed registrations', t =>
 test('successful notification is stored once with restricted mentions', async t => {
   const s = fixture(t), c = channel(s); s.queue(c, upload(), 'upload'); let sent = 0;
   const w = new Worker(s, { videos: async () => [upload()] }, {}, { notifications: { send: async payload => {
-    sent++; assert.deepEqual(payload.allowedMentions, { parse: [], users: ['member1'] }); assert.equal(payload.enforceNonce, true); return { id: 'msg' };
+    sent++; assert.match(payload.content, /^@everyone /); assert.deepEqual(payload.allowedMentions, { parse: ['everyone'], users: ['member1'], roles: [] }); assert.equal(payload.enforceNonce, true); return { id: 'msg' };
   } } }, () => true);
   await w.deliver(); await w.deliver(); assert.equal(sent, 1); assert.equal(s.get('SELECT state FROM events').state, 'sent');
 });

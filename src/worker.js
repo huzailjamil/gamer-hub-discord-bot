@@ -121,8 +121,8 @@ class Worker {
           image: { url: `https://i.ytimg.com/vi/${event.video}/hqdefault.jpg` }, footer: { text: marker }
         };
         const message = await this.channels.notifications.send({
-          content: `${isLive ? '🔴' : '🎬'} <@${event.member}> ${isLive ? 'is live—come join!' : 'uploaded a new video!'}\nhttps://www.youtube.com/watch?v=${event.video}`,
-          embeds: [embed], allowedMentions: { parse: [], users: [event.member] }, nonce: nonce(event.key), enforceNonce: true
+          content: `@everyone ${isLive ? '🔴' : '🎬'} <@${event.member}> ${isLive ? 'is live—come join!' : 'uploaded a new video!'}\nhttps://www.youtube.com/watch?v=${event.video}`,
+          embeds: [embed], allowedMentions: { parse: ['everyone'], users: [event.member], roles: [] }, nonce: nonce(event.key), enforceNonce: true
         });
         this.store.transaction(() => {
           this.store.run("UPDATE events SET state='sent', message=? WHERE key=?", message.id, event.key);
